@@ -40,7 +40,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 8,
 			.manufacturer = "FTDI",
 			.product = "FT232R USB UART",
-			.serial = "FTRP2040",
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_PL2303_H] =
 		{
@@ -52,7 +52,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 8,
 			.manufacturer = "Prolific Technology Inc.",
 			.product = "USB-Serial Controller",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_PL2303_HX] =
 		{
@@ -64,7 +64,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Prolific Technology Inc.",
 			.product = "USB-Serial Controller",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_PL2303_TA] =
 		{
@@ -76,7 +76,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Prolific Technology Inc.",
 			.product = "USB-Serial Controller",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_PL2303_TB] =
 		{
@@ -88,7 +88,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Prolific Technology Inc.",
 			.product = "USB-Serial Controller",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_PL2303_HXD] =
 		{
@@ -100,7 +100,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Prolific Technology Inc.",
 			.product = "USB-Serial Controller",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_PL2303_HXD_CLONE] =
 		{
@@ -112,7 +112,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Prolific Technology Inc.",
 			.product = "USB-Serial Controller",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_PL2303_HXN] =
 		{
@@ -124,7 +124,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Prolific Technology Inc.",
 			.product = "USB-Serial Controller",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_CH340] =
 		{
@@ -136,7 +136,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 8,
 			.manufacturer = "QinHeng Electronics",
 			.product = "USB Serial",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_CP2102] =
 		{
@@ -148,7 +148,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Silicon Labs",
 			.product = "CP2102 USB to UART Bridge Controller",
-			.serial = "CP2102RP2040",
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_CDC_ACM] =
 		{
@@ -163,7 +163,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.device_protocol = 0x01,
 			.manufacturer = "Raspberry Pi",
 			.product = "CDC ACM USB Serial",
-			.serial = "ACMRP2040",
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_SIEMENS_SX1] =
 		{
@@ -175,7 +175,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Siemens AG",
 			.product = "SX1",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_SIEMENS_X65] =
 		{
@@ -187,7 +187,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Siemens AG",
 			.product = "Mobile phone USB cable",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_SIEMENS_X75] =
 		{
@@ -199,7 +199,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Siemens AG",
 			.product = "X75",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_SIEMENS_EF81] =
 		{
@@ -211,7 +211,7 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "Siemens AG",
 			.product = "SXG75/EF81",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
 		},
 	[USB_PROFILE_BENQ_SIEMENS_S81] =
 		{
@@ -223,7 +223,22 @@ static const usb_profile_t profiles[USB_PROFILE_COUNT] = {
 			.ep0_size = 64,
 			.manufacturer = "BenQ",
 			.product = "BenQ-Siemens S81",
-			.serial = NULL,
+			.serial = "USB-SERIAL-EMU",
+		},
+	[USB_PROFILE_CDC_TEST] =
+		{
+			.chip = USB_CHIP_CDC_ACM,
+			.vid = 0x2e8a,
+			.pid = 0x000a,
+			.bcd_usb = 0x0200,
+			.bcd_device = 0x0100,
+			.ep0_size = 64,
+			.device_class = 0xef,
+			.device_subclass = 0x02,
+			.device_protocol = 0x01,
+			.manufacturer = "Raspberry Pi",
+			.product = "CDC ACM serial tester",
+			.serial = "USB-SERIAL-TEST",
 		},
 };
 
@@ -296,6 +311,10 @@ bool runtime_profile_is_cp210x(void) {
 
 bool runtime_profile_is_cdc_acm(void) {
 	return profiles[active_profile].chip == USB_CHIP_CDC_ACM;
+}
+
+bool runtime_profile_is_cdc_test(void) {
+	return active_profile == USB_PROFILE_CDC_TEST;
 }
 
 bool runtime_profile_is_pl2303_hxn(void) {

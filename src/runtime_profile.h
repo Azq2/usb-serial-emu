@@ -20,6 +20,7 @@ typedef enum {
 	USB_PROFILE_SIEMENS_X75,
 	USB_PROFILE_SIEMENS_EF81,
 	USB_PROFILE_BENQ_SIEMENS_S81,
+	USB_PROFILE_CDC_TEST,
 	USB_PROFILE_COUNT,
 } usb_profile_id_t;
 
@@ -53,6 +54,7 @@ bool runtime_profile_is_ft232(void);
 bool runtime_profile_is_ch341(void);
 bool runtime_profile_is_cp210x(void);
 bool runtime_profile_is_cdc_acm(void);
+bool runtime_profile_is_cdc_test(void);
 
 bool runtime_profile_is_pl2303_hxn(void);
 bool runtime_profile_is_pl2303_hxd_clone(void);

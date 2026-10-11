@@ -17,6 +17,7 @@ Firmware for Raspberry Pi Pico that emulates USB-to-serial adapters. Linux uses 
 | `ch340` | `1a86:7523` | `ch341` |
 | `cp2102` | `10c4:ea60` | `cp210x` |
 | `cdc-acm` | `2e8a:000a` | `cdc_acm` |
+| `cdc-test` | `2e8a:000a` | `cdc_acm` |
 | `siemens-sx1` | `11f5:0001` | `pl2303` |
 | `siemens-x65` | `11f5:0003` | `pl2303` |
 | `siemens-x75` | `11f5:0004` | `pl2303` |
@@ -35,6 +36,8 @@ picotool load -v -x build/usb_serial_emu.uf2
 ```
 
 Without a saved profile, the firmware starts as `ft232r`.
+
+The `cdc-test` profile provides a command protocol for serial-driver tests. See [PROTOCOL.md](PROTOCOL.md).
 
 ## Switch profiles
 
@@ -59,7 +62,7 @@ The device disconnects and appears again with a new USB ID. The selected profile
 
 ## Test
 
-The test switches through every profile and checks the USB ID, Linux driver, control lines, BREAK, and loopback data:
+The test switches through every loopback profile and checks the USB ID, Linux driver, control lines, BREAK, and loopback data:
 
 ```sh
 ./tools/verify-hardware.py /dev/ttyUSB1

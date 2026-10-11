@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "cdc_acm_device.h"
 #include "runtime_profile.h"
 #include "usb_descriptors.h"
 #include "usb_serial_dispatch.h"
@@ -52,6 +53,10 @@ static void device_event(uint8_t bus, uint8_t event) {
 		usb_serial_reset();
 	} else if (event == USBD_EVENT_CONFIGURED) {
 		usb_serial_configured();
+	} else if (event == USBD_EVENT_SUSPEND && runtime_profile_is_cdc_test()) {
+		cdc_acm_suspended();
+	} else if (event == USBD_EVENT_RESUME && runtime_profile_is_cdc_test()) {
+		cdc_acm_resumed();
 	}
 }
 

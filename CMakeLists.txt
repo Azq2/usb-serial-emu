@@ -42,6 +42,8 @@ add_executable(usb_serial_emu
 	src/usb_device.c
 	src/rp2040_usb_workarounds.c
 	src/cdc_acm_device.c
+	src/cdc_test_adapter.c
+	src/cdc_test_protocol.c
 	src/ch341_device.c
 	src/cp210x_device.c
 	src/pl2303_device.c

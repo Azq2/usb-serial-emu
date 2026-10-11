@@ -56,7 +56,17 @@ static bool profile_for_service_baud(uint32_t baud, usb_profile_id_t *profile) {
 void personality_switch_control_update(uint32_t baud, uint8_t data_bits, uint8_t parity, uint8_t stop_bits, bool dtr,
 									   bool rts, bool break_enabled) {
 	bool clone_without_break = runtime_profile_is_pl2303_hxd_clone() && !break_enabled;
-	if (data_bits != 7 || parity != 1 || stop_bits != 2 || !rts || (!break_enabled && !clone_without_break)) {
+	if (data_bits != 7 || stop_bits != 2 || !rts || (!break_enabled && !clone_without_break)) {
+		return;
+	}
+	if (parity == 2 && baud_matches(baud, 9600)) {
+		pending_action = SWITCH_ACTION_PROFILE;
+		pending_profile = USB_PROFILE_CDC_TEST;
+		pending_profile_persist = dtr;
+		action_deadline_us = time_us_64() + 100000u;
+		return;
+	}
+	if (parity != 1) {
 		return;
 	}
 

@@ -31,19 +31,23 @@ PROFILE_BAUD = {
     "siemens-x75": 230400,
     "siemens-ef81": 460800,
     "benq-siemens-s81": 921600,
+    "cdc-test": 9600,
 }
 
 
 def send_management_command(device: str, baud: int,
-                            persistent: bool = False) -> None:
+                            persistent: bool = False,
+                            even_parity: bool = False) -> None:
     fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_CLOEXEC)
     try:
         attrs = termios.tcgetattr(fd)
         attrs[0] = 0
         attrs[1] = 0
         attrs[2] &= ~(termios.CSIZE | termios.PARENB | termios.PARODD)
-        attrs[2] |= (termios.CS7 | termios.PARENB | termios.PARODD |
-                     termios.CSTOPB | termios.CLOCAL | termios.CREAD)
+        attrs[2] |= (termios.CS7 | termios.PARENB | termios.CSTOPB |
+                     termios.CLOCAL | termios.CREAD)
+        if not even_parity:
+            attrs[2] |= termios.PARODD
         attrs[3] = 0
         speed = getattr(termios, f"B{baud}")
         attrs[4] = speed
@@ -102,7 +106,8 @@ def main() -> int:
 
     if args.command == "select":
         send_management_command(args.device, PROFILE_BAUD[args.profile],
-                                args.persist)
+                                args.persist,
+                                even_parity=args.profile == "cdc-test")
         storage = "flash" if args.persist else "watchdog scratch"
         print(f"selected {args.profile} via {storage}; "
               "device is re-enumerating")
