@@ -13,10 +13,13 @@
 #include "pico/time.h"
 
 enum {
-	LINE_CAPACITY = 192,
+	LINE_CAPACITY = 1024,
 	OUTPUT_RESERVE = 256,
 	TRANSFER_BUFFER_SIZE = 256,
 	MAX_TIMEOUT_MS = 600000,
+	DEFAULT_SCRIPT_TIMEOUT_MS = 5000,
+	MAX_SCRIPT_OPS = 64,
+	SCRIPT_DATA_CAPACITY = 4096,
 	CDC_STATE_DCD = 1u << 0,
 	CDC_STATE_DSR = 1u << 1,
 	CDC_STATE_BREAK = 1u << 2,
@@ -28,10 +31,35 @@ enum {
 
 typedef enum {
 	MODE_COMMAND,
+	MODE_SCRIPT_UPLOAD,
+	MODE_SCRIPT_RUN,
+	MODE_DELAY,
 	MODE_TX_PRNG,
 	MODE_RX_PRNG,
+	MODE_TX_LITERAL,
+	MODE_RX_LITERAL,
 	MODE_LOOPBACK,
 } protocol_mode_t;
+
+typedef enum {
+	SCRIPT_DELAY,
+	SCRIPT_SIGNAL,
+	SCRIPT_PULSE,
+	SCRIPT_TX_PRNG,
+	SCRIPT_RX_PRNG,
+	SCRIPT_SEND,
+	SCRIPT_RECV,
+	SCRIPT_LOOPBACK,
+} script_opcode_t;
+
+typedef struct {
+	script_opcode_t opcode;
+	uint16_t data_offset;
+	uint16_t data_size;
+	uint32_t arg0;
+	uint32_t arg1;
+	uint32_t arg2;
+} script_op_t;
 
 typedef struct {
 	uint32_t state;
@@ -54,6 +82,17 @@ typedef struct {
 	uint32_t mismatch_offset;
 	uint8_t mismatch_expected;
 	uint8_t mismatch_actual;
+	uint16_t literal_offset;
+	bool script_running;
+	uint32_t script_id;
+	uint32_t script_line;
+	uint32_t script_error_line;
+	uint32_t script_timeout_ms;
+	size_t script_op_count;
+	size_t script_op_index;
+	size_t script_data_size;
+	script_op_t script_ops[MAX_SCRIPT_OPS];
+	uint8_t script_data[SCRIPT_DATA_CAPACITY];
 	uint16_t steady_serial_state;
 	uint16_t pulse_serial_state;
 	uint64_t pulse_deadlines[7];
@@ -173,6 +212,13 @@ static void reset_protocol(void) {
 	state.remaining = 0;
 	state.transferred = 0;
 	state.mismatch = false;
+	state.script_running = false;
+	state.script_line = 0;
+	state.script_error_line = 0;
+	state.script_timeout_ms = DEFAULT_SCRIPT_TIMEOUT_MS;
+	state.script_op_count = 0;
+	state.script_op_index = 0;
+	state.script_data_size = 0;
 	state.steady_serial_state = 0;
 	state.pulse_serial_state = 0;
 	memset(state.pulse_deadlines, 0, sizeof(state.pulse_deadlines));
@@ -238,6 +284,254 @@ static void start_loopback(uint32_t id, uint32_t size, uint32_t timeout_ms) {
 	(void) send_line("%lu READY %lu\n", (unsigned long) id, (unsigned long) size);
 }
 
+static char *skip_spaces(char *text) {
+	while (*text == ' ' || *text == '\t') {
+		++text;
+	}
+	return text;
+}
+
+static char *take_word(char **cursor) {
+	char *word = skip_spaces(*cursor);
+	if (*word == '\0') {
+		*cursor = word;
+		return NULL;
+	}
+	char *end = word;
+	while (*end != '\0' && *end != ' ' && *end != '\t') {
+		++end;
+	}
+	if (*end != '\0') {
+		*end++ = '\0';
+	}
+	*cursor = end;
+	return word;
+}
+
+static bool cursor_empty(char *cursor) {
+	return *skip_spaces(cursor) == '\0';
+}
+
+static int hex_value(char c) {
+	if (c >= '0' && c <= '9') {
+		return c - '0';
+	}
+	if (c >= 'a' && c <= 'f') {
+		return c - 'a' + 10;
+	}
+	if (c >= 'A' && c <= 'F') {
+		return c - 'A' + 10;
+	}
+	return -1;
+}
+
+static bool parse_literal(char *text, uint32_t expected_size, uint16_t *offset) {
+	if (expected_size > SCRIPT_DATA_CAPACITY - state.script_data_size) {
+		return false;
+	}
+	text = skip_spaces(text);
+	size_t start = state.script_data_size;
+	size_t count = 0;
+	if (*text == '"') {
+		++text;
+		while (*text != '\0' && *text != '"') {
+			uint8_t value;
+			if (*text == '\\') {
+				++text;
+				switch (*text) {
+					case '"':
+					case '\\':
+						value = (uint8_t) *text++;
+						break;
+					case '0':
+						value = 0;
+						++text;
+						break;
+					case 'n':
+						value = '\n';
+						++text;
+						break;
+					case 'r':
+						value = '\r';
+						++text;
+						break;
+					case 't':
+						value = '\t';
+						++text;
+						break;
+					case 'x': {
+						if (text[1] == '\0' || text[2] == '\0') {
+							return false;
+						}
+						int high = hex_value(text[1]);
+						int low = hex_value(text[2]);
+						if (high < 0 || low < 0) {
+							return false;
+						}
+						value = (uint8_t) ((high << 4) | low);
+						text += 3;
+						break;
+					}
+					default:
+						return false;
+				}
+			} else {
+				unsigned char value_char = (unsigned char) *text++;
+				if (value_char < 0x20 || value_char > 0x7e) {
+					return false;
+				}
+				value = value_char;
+			}
+			if (count >= expected_size) {
+				return false;
+			}
+			state.script_data[start + count++] = value;
+		}
+		if (*text != '"' || !cursor_empty(text + 1)) {
+			return false;
+		}
+	} else {
+		char *end = text + strlen(text);
+		while (end > text && (end[-1] == ' ' || end[-1] == '\t')) {
+			--end;
+		}
+		if ((size_t) (end - text) != (size_t) expected_size * 2u) {
+			return false;
+		}
+		for (uint32_t i = 0; i < expected_size; ++i) {
+			int high = hex_value(text[i * 2u]);
+			int low = hex_value(text[i * 2u + 1u]);
+			if (high < 0 || low < 0) {
+				return false;
+			}
+			state.script_data[start + count++] = (uint8_t) ((high << 4) | low);
+		}
+	}
+	if (count != expected_size) {
+		return false;
+	}
+	*offset = (uint16_t) start;
+	state.script_data_size += count;
+	return true;
+}
+
+static bool add_script_op(const script_op_t *op) {
+	if (state.script_op_count == MAX_SCRIPT_OPS) {
+		return false;
+	}
+	state.script_ops[state.script_op_count++] = *op;
+	return true;
+}
+
+static void script_parse_error(void) {
+	if (state.script_error_line == 0) {
+		state.script_error_line = state.script_line;
+	}
+}
+
+static void process_script_line(void) {
+	state.line[state.line_size] = '\0';
+	++state.script_line;
+	char *line = skip_spaces(state.line);
+	char *end = line + strlen(line);
+	while (end > line && (end[-1] == ' ' || end[-1] == '\t')) {
+		*--end = '\0';
+	}
+	if (strcmp(line, "END") == 0) {
+		if (state.line_overflow && state.script_error_line == 0) {
+			state.script_error_line = state.script_line;
+		}
+		if (state.script_error_line != 0) {
+			(void) send_line("%lu ERR BAD_SCRIPT line=%lu\n", (unsigned long) state.script_id,
+							 (unsigned long) state.script_error_line);
+			state.mode = MODE_COMMAND;
+			state.script_op_count = 0;
+			state.script_data_size = 0;
+			return;
+		}
+		(void) send_line("%lu RUN\n", (unsigned long) state.script_id);
+		state.script_running = true;
+		state.script_op_index = 0;
+		state.mode = MODE_SCRIPT_RUN;
+		return;
+	}
+	if (state.script_error_line != 0) {
+		return;
+	}
+	if (state.line_overflow) {
+		script_parse_error();
+		return;
+	}
+	if (*line == '\0') {
+		return;
+	}
+	if (state.script_op_count == MAX_SCRIPT_OPS) {
+		script_parse_error();
+		return;
+	}
+
+	char *cursor = line;
+	const char *command = take_word(&cursor);
+	script_op_t op = {0};
+	if (strcmp(command, "TIMEOUT") == 0) {
+		uint32_t timeout_ms;
+		if (!parse_u32(take_word(&cursor), &timeout_ms) || timeout_ms == 0 || timeout_ms > MAX_TIMEOUT_MS ||
+			!cursor_empty(cursor)) {
+			script_parse_error();
+			return;
+		}
+		state.script_timeout_ms = timeout_ms;
+		return;
+	}
+	if (strcmp(command, "DELAY") == 0) {
+		op.opcode = SCRIPT_DELAY;
+		if (!parse_u32(take_word(&cursor), &op.arg0) || op.arg0 > MAX_TIMEOUT_MS || !cursor_empty(cursor)) {
+			script_parse_error();
+			return;
+		}
+	} else if (strcmp(command, "SIGNAL") == 0 || strcmp(command, "PULSE") == 0) {
+		const char *name = take_word(&cursor);
+		op.arg0 = name == NULL ? 0 : signal_bit(name);
+		op.opcode = command[0] == 'S' ? SCRIPT_SIGNAL : SCRIPT_PULSE;
+		if (op.arg0 == 0 || !parse_u32(take_word(&cursor), &op.arg1) || (op.opcode == SCRIPT_SIGNAL && op.arg1 > 1) ||
+			(op.opcode == SCRIPT_PULSE && (op.arg1 == 0 || op.arg1 > MAX_TIMEOUT_MS)) || !cursor_empty(cursor)) {
+			script_parse_error();
+			return;
+		}
+	} else if (strcmp(command, "TX") == 0 || strcmp(command, "RX") == 0) {
+		op.opcode = command[0] == 'T' ? SCRIPT_TX_PRNG : SCRIPT_RX_PRNG;
+		if (!parse_u32(take_word(&cursor), &op.arg0) || op.arg0 == 0 || !parse_u32(take_word(&cursor), &op.arg1) ||
+			!cursor_empty(cursor)) {
+			script_parse_error();
+			return;
+		}
+		op.arg2 = state.script_timeout_ms;
+	} else if (strcmp(command, "LOOPBACK") == 0) {
+		op.opcode = SCRIPT_LOOPBACK;
+		if (!parse_u32(take_word(&cursor), &op.arg0) || !cursor_empty(cursor)) {
+			script_parse_error();
+			return;
+		}
+		op.arg1 = state.script_timeout_ms;
+	} else if (strcmp(command, "SEND") == 0 || strcmp(command, "RECV") == 0) {
+		uint32_t size;
+		op.opcode = command[0] == 'S' ? SCRIPT_SEND : SCRIPT_RECV;
+		if (!parse_u32(take_word(&cursor), &size) || size > UINT16_MAX ||
+			!parse_literal(cursor, size, &op.data_offset)) {
+			script_parse_error();
+			return;
+		}
+		op.data_size = (uint16_t) size;
+		op.arg0 = state.script_timeout_ms;
+	} else {
+		script_parse_error();
+		return;
+	}
+	if (!add_script_op(&op)) {
+		script_parse_error();
+	}
+}
+
 static void process_command(void) {
 	state.line[state.line_size] = '\0';
 	if (state.line_overflow) {
@@ -259,7 +553,23 @@ static void process_command(void) {
 			command_error(id, "SYNTAX");
 			return;
 		}
-		(void) send_line("%lu OK protocol=cdc-test version=1 prng=xorshift32\n", (unsigned long) id);
+		(void) send_line("%lu OK protocol=cdc-test version=2 prng=xorshift32\n", (unsigned long) id);
+		return;
+	}
+	if (strcmp(command, "BEGIN") == 0) {
+		if (!no_more_tokens(&context)) {
+			command_error(id, "SYNTAX");
+			return;
+		}
+		state.script_id = id;
+		state.script_line = 0;
+		state.script_error_line = 0;
+		state.script_timeout_ms = DEFAULT_SCRIPT_TIMEOUT_MS;
+		state.script_op_count = 0;
+		state.script_op_index = 0;
+		state.script_data_size = 0;
+		state.mode = MODE_SCRIPT_UPLOAD;
+		(void) send_line("%lu READY\n", (unsigned long) id);
 		return;
 	}
 	if (strcmp(command, "PERSONALITIES") == 0) {
@@ -407,7 +717,11 @@ static void command_task(void) {
 	uint8_t byte;
 	while (cdc_test_device_read(&byte, 1) == 1) {
 		if (byte == '\n') {
-			process_command();
+			if (state.mode == MODE_SCRIPT_UPLOAD) {
+				process_script_line();
+			} else {
+				process_command();
+			}
 			state.line_size = 0;
 			state.line_overflow = false;
 			return;
@@ -423,11 +737,112 @@ static void command_task(void) {
 	}
 }
 
+static void operation_complete(void) {
+	state.mode = state.script_running ? MODE_SCRIPT_RUN : MODE_COMMAND;
+}
+
+static void script_run_task(void) {
+	while (state.script_op_index < state.script_op_count) {
+		const script_op_t *op = &state.script_ops[state.script_op_index];
+		switch (op->opcode) {
+			case SCRIPT_DELAY:
+				++state.script_op_index;
+				if (op->arg0 != 0) {
+					state.deadline_us = deadline_after_ms(op->arg0);
+					state.mode = MODE_DELAY;
+					return;
+				}
+				break;
+			case SCRIPT_SIGNAL:
+				if (op->arg1 != 0) {
+					state.steady_serial_state |= (uint16_t) op->arg0;
+				} else {
+					state.steady_serial_state &= (uint16_t) ~op->arg0;
+				}
+				set_serial_state();
+				++state.script_op_index;
+				break;
+			case SCRIPT_PULSE:
+				state.pulse_serial_state |= (uint16_t) op->arg0;
+				for (unsigned index = 0; index < 7; ++index) {
+					if (op->arg0 == (1u << index)) {
+						state.pulse_deadlines[index] = deadline_after_ms(op->arg1);
+						break;
+					}
+				}
+				set_serial_state();
+				++state.script_op_index;
+				break;
+			case SCRIPT_TX_PRNG:
+				if (cdc_test_device_write_free() < OUTPUT_RESERVE) {
+					return;
+				}
+				++state.script_op_index;
+				start_tx(state.script_id, op->arg0, op->arg1);
+				return;
+			case SCRIPT_RX_PRNG:
+				if (cdc_test_device_write_free() < OUTPUT_RESERVE) {
+					return;
+				}
+				++state.script_op_index;
+				start_rx(state.script_id, op->arg0, op->arg1, op->arg2);
+				return;
+			case SCRIPT_SEND:
+				if (cdc_test_device_write_free() < OUTPUT_RESERVE) {
+					return;
+				}
+				state.command_id = state.script_id;
+				state.literal_offset = op->data_offset;
+				state.remaining = op->data_size;
+				state.transferred = 0;
+				++state.script_op_index;
+				state.mode = MODE_TX_LITERAL;
+				(void) send_line("%lu DATA %u\n", (unsigned long) state.script_id, op->data_size);
+				return;
+			case SCRIPT_RECV:
+				if (cdc_test_device_write_free() < OUTPUT_RESERVE) {
+					return;
+				}
+				state.command_id = state.script_id;
+				state.literal_offset = op->data_offset;
+				state.remaining = op->data_size;
+				state.transferred = 0;
+				state.timeout_ms = op->arg0;
+				state.deadline_us = deadline_after_ms(op->arg0);
+				state.mismatch = false;
+				++state.script_op_index;
+				state.mode = MODE_RX_LITERAL;
+				(void) send_line("%lu READY %u\n", (unsigned long) state.script_id, op->data_size);
+				return;
+			case SCRIPT_LOOPBACK:
+				if (cdc_test_device_write_free() < OUTPUT_RESERVE) {
+					return;
+				}
+				++state.script_op_index;
+				start_loopback(state.script_id, op->arg0, op->arg1);
+				return;
+		}
+	}
+	if (cdc_test_device_write_free() >= OUTPUT_RESERVE && send_line("%lu OK\n", (unsigned long) state.script_id)) {
+		state.script_running = false;
+		state.mode = MODE_COMMAND;
+	}
+}
+
+static void delay_task(void) {
+	if (time_us_64() >= state.deadline_us) {
+		state.mode = MODE_SCRIPT_RUN;
+	}
+}
+
 static void tx_task(void) {
 	uint8_t buffer[TRANSFER_BUFFER_SIZE];
 	if (state.remaining == 0) {
-		if (cdc_test_device_write_free() >= OUTPUT_RESERVE && send_line("%lu OK\n", (unsigned long) state.command_id)) {
-			state.mode = MODE_COMMAND;
+		if (state.script_running) {
+			operation_complete();
+		} else if (cdc_test_device_write_free() >= OUTPUT_RESERVE &&
+				   send_line("%lu OK\n", (unsigned long) state.command_id)) {
+			operation_complete();
 		}
 		return;
 	}
@@ -444,18 +859,45 @@ static void tx_task(void) {
 	state.transferred += (uint32_t) count;
 }
 
+static void tx_literal_task(void) {
+	if (state.remaining == 0) {
+		operation_complete();
+		return;
+	}
+	size_t count = state.remaining < TRANSFER_BUFFER_SIZE ? state.remaining : TRANSFER_BUFFER_SIZE;
+	size_t free = cdc_test_device_write_free();
+	if (count > free) {
+		count = free;
+	}
+	count = cdc_test_device_write(&state.script_data[state.literal_offset + state.transferred], count);
+	state.remaining -= (uint32_t) count;
+	state.transferred += (uint32_t) count;
+}
+
 static void finish_rx(void) {
 	if (cdc_test_device_write_free() < OUTPUT_RESERVE) {
 		return;
 	}
 	if (state.mismatch) {
-		(void) send_line("%lu ERR MISMATCH offset=%lu expected=%u actual=%u received=%lu\n",
-						 (unsigned long) state.command_id, (unsigned long) state.mismatch_offset,
-						 state.mismatch_expected, state.mismatch_actual, (unsigned long) state.transferred);
-	} else {
+		if (state.script_running) {
+			(void) send_line("%lu ERR MISMATCH step=%lu offset=%lu expected=%u actual=%u received=%lu\n",
+							 (unsigned long) state.command_id, (unsigned long) state.script_op_index,
+							 (unsigned long) state.mismatch_offset, state.mismatch_expected, state.mismatch_actual,
+							 (unsigned long) state.transferred);
+		} else {
+			(void) send_line("%lu ERR MISMATCH offset=%lu expected=%u actual=%u received=%lu\n",
+							 (unsigned long) state.command_id, (unsigned long) state.mismatch_offset,
+							 state.mismatch_expected, state.mismatch_actual, (unsigned long) state.transferred);
+		}
+	} else if (!state.script_running) {
 		(void) send_line("%lu OK\n", (unsigned long) state.command_id);
 	}
-	state.mode = MODE_COMMAND;
+	if (state.mismatch) {
+		state.script_running = false;
+		state.mode = MODE_COMMAND;
+	} else {
+		operation_complete();
+	}
 }
 
 static void rx_task(void) {
@@ -482,8 +924,45 @@ static void rx_task(void) {
 		return;
 	}
 	if (time_us_64() >= state.deadline_us && cdc_test_device_write_free() >= OUTPUT_RESERVE) {
-		(void) send_line("%lu ERR TIMEOUT received=%lu\n", (unsigned long) state.command_id,
-						 (unsigned long) state.transferred);
+		if (state.script_running) {
+			(void) send_line("%lu ERR TIMEOUT step=%lu received=%lu\n", (unsigned long) state.command_id,
+							 (unsigned long) state.script_op_index, (unsigned long) state.transferred);
+			state.script_running = false;
+		} else {
+			(void) send_line("%lu ERR TIMEOUT received=%lu\n", (unsigned long) state.command_id,
+							 (unsigned long) state.transferred);
+		}
+		state.mode = MODE_COMMAND;
+	}
+}
+
+static void rx_literal_task(void) {
+	uint8_t buffer[TRANSFER_BUFFER_SIZE];
+	if (state.remaining == 0) {
+		finish_rx();
+		return;
+	}
+	size_t count = state.remaining < sizeof(buffer) ? state.remaining : sizeof(buffer);
+	count = cdc_test_device_read(buffer, count);
+	if (count != 0) {
+		for (size_t i = 0; i < count; ++i) {
+			uint8_t expected = state.script_data[state.literal_offset + state.transferred + i];
+			if (!state.mismatch && buffer[i] != expected) {
+				state.mismatch = true;
+				state.mismatch_offset = state.transferred + (uint32_t) i;
+				state.mismatch_expected = expected;
+				state.mismatch_actual = buffer[i];
+			}
+		}
+		state.remaining -= (uint32_t) count;
+		state.transferred += (uint32_t) count;
+		state.deadline_us = deadline_after_ms(state.timeout_ms);
+		return;
+	}
+	if (time_us_64() >= state.deadline_us && cdc_test_device_write_free() >= OUTPUT_RESERVE) {
+		(void) send_line("%lu ERR TIMEOUT step=%lu received=%lu\n", (unsigned long) state.command_id,
+						 (unsigned long) state.script_op_index, (unsigned long) state.transferred);
+		state.script_running = false;
 		state.mode = MODE_COMMAND;
 	}
 }
@@ -491,8 +970,11 @@ static void rx_task(void) {
 static void loopback_task(void) {
 	uint8_t buffer[TRANSFER_BUFFER_SIZE];
 	if (state.remaining == 0) {
-		if (cdc_test_device_write_free() >= OUTPUT_RESERVE && send_line("%lu OK\n", (unsigned long) state.command_id)) {
-			state.mode = MODE_COMMAND;
+		if (state.script_running) {
+			operation_complete();
+		} else if (cdc_test_device_write_free() >= OUTPUT_RESERVE &&
+				   send_line("%lu OK\n", (unsigned long) state.command_id)) {
+			operation_complete();
 		}
 		return;
 	}
@@ -510,8 +992,14 @@ static void loopback_task(void) {
 		return;
 	}
 	if (time_us_64() >= state.deadline_us && free >= OUTPUT_RESERVE) {
-		(void) send_line("%lu ERR TIMEOUT received=%lu\n", (unsigned long) state.command_id,
-						 (unsigned long) state.transferred);
+		if (state.script_running) {
+			(void) send_line("%lu ERR TIMEOUT step=%lu received=%lu\n", (unsigned long) state.command_id,
+							 (unsigned long) state.script_op_index, (unsigned long) state.transferred);
+			state.script_running = false;
+		} else {
+			(void) send_line("%lu ERR TIMEOUT received=%lu\n", (unsigned long) state.command_id,
+							 (unsigned long) state.transferred);
+		}
 		state.mode = MODE_COMMAND;
 	}
 }
@@ -624,11 +1112,26 @@ void cdc_test_protocol_task(void) {
 				command_task();
 			}
 			break;
+		case MODE_SCRIPT_UPLOAD:
+			command_task();
+			break;
+		case MODE_SCRIPT_RUN:
+			script_run_task();
+			break;
+		case MODE_DELAY:
+			delay_task();
+			break;
 		case MODE_TX_PRNG:
 			tx_task();
 			break;
 		case MODE_RX_PRNG:
 			rx_task();
+			break;
+		case MODE_TX_LITERAL:
+			tx_literal_task();
+			break;
+		case MODE_RX_LITERAL:
+			rx_literal_task();
 			break;
 		case MODE_LOOPBACK:
 			loopback_task();

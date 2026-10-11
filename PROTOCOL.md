@@ -7,7 +7,7 @@
 - Response: `<id> OK ...`, `<id> ERR <code> ...`, `<id> DATA ...`, or `<id> READY ...`.
 - Event: `EVENT <type> ...`.
 - Numbers: decimal or `0x`-prefixed hexadecimal.
-- Maximum command length: 191 bytes without the line ending.
+- Maximum line length: 1023 bytes without the line ending.
 - Unknown `name=value` fields must be ignored.
 
 ## Commands
@@ -23,12 +23,50 @@
 | `<id> TX <seed> <size>` | Device sends PRNG data. |
 | `<id> RX <seed> <size> <timeout_ms>` | Device verifies PRNG data. |
 | `<id> LOOPBACK <size> <timeout_ms>` | Echo raw data. |
+| `<id> BEGIN` | Upload and run a script. |
 | `<id> RESET` | Clear generated signals. |
 | `<id> BOOTSEL` | Enter the RP2040 bootloader. |
 
 Signals: `DCD`, `DSR`, `BREAK`, `RING`, `FRAMING`, `PARITY`, `OVERRUN`. CDC ACM cannot generate CTS; Linux reports it as asserted.
 
 `seed` must be nonzero. `timeout_ms`: 1–600000; restarted after each received block. `PERSIST` writes the selection to flash. Other personalities run loopback.
+
+## Scripts
+
+```text
+42 BEGIN
+SEND 4 "AT\r\n"
+RECV 2 "OK"
+DELAY 50
+SIGNAL BREAK 1
+DELAY 20
+SIGNAL BREAK 0
+TX 0x12345678 4096
+END
+```
+
+`BEGIN` returns `42 READY`. `END` returns `42 RUN`; execution ends with `42 OK`. A script is validated before execution.
+
+| Instruction | Action |
+|---|---|
+| `TIMEOUT <ms>` | Set the timeout for following `RECV`, `RX`, and `LOOPBACK`; default 5000. |
+| `DELAY <ms>` | Wait on the device. |
+| `SIGNAL <signal> <0\|1>` | Set a serial-state bit. |
+| `PULSE <signal> <ms>` | Pulse a serial-state bit. |
+| `SEND <size> <literal>` | Send literal bytes. |
+| `RECV <size> <literal>` | Receive and verify literal bytes. |
+| `TX <seed> <size>` | Send PRNG bytes. |
+| `RX <seed> <size>` | Receive and verify PRNG bytes. |
+| `LOOPBACK <size>` | Echo raw bytes. |
+
+A literal is either contiguous hex or a quoted ASCII string. Strings support `\"`, `\\`, `\0`, `\n`, `\r`, `\t`, and `\xNN`. The decoded length must equal `size`.
+
+```text
+RECV 3 "str"
+RECV 4 AABBCCDD
+```
+
+Limits: 64 instructions and 4096 literal bytes. On failure: `42 ERR BAD_SCRIPT line=3`. Transfer errors also contain `step=<number>`.
 
 ## Raw transfers
 
@@ -57,7 +95,7 @@ RX finishes the block before reporting a mismatch:
 8 ERR MISMATCH offset=123 expected=45 actual=67 received=1048576
 ```
 
-Events are held until transfer completion. USB reset aborts the transfer. After a timeout, the next byte starts a command; reset USB if the host may still send the old block.
+Scripts use the same `DATA` and `READY` framing without per-instruction `OK`; only the script itself ends with `OK`. Events are held until transfer or script completion. USB reset aborts execution. After a timeout, the next byte starts a command; reset USB if the host may still send the old block.
 
 ## PRNG
 
@@ -100,4 +138,4 @@ Parity: 0 none, 1 odd, 2 even, 3 mark, 4 space. Stop bits: 0 one, 1 one-and-a-ha
 
 ## Errors
 
-`SYNTAX`, `BAD_ARGUMENT`, `UNKNOWN_COMMAND`, `LINE_TOO_LONG`, `TIMEOUT`, `MISMATCH`.
+`SYNTAX`, `BAD_ARGUMENT`, `UNKNOWN_COMMAND`, `LINE_TOO_LONG`, `BAD_SCRIPT`, `TIMEOUT`, `MISMATCH`.
